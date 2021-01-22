@@ -2,6 +2,7 @@
 using Kusto.Data;
 using Kusto.Data.Common;
 using Kusto.Data.Net.Client;
+using Newtonsoft.Json.Linq;
 
 namespace HelloKusto
 {
@@ -116,10 +117,9 @@ namespace HelloKusto
                     //| join kind=leftanti knownIssue on $left.FactDefinition_Id==$right.factId
                     | where isnotempty(NotSatisfiedDependency) 
                     | order by DataAgeInDays
-                    | extend NotSatisfiedDependFactId= extract(""([a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12})"",1,NotSatisfiedDependency)
+                    | extend NotSatisfiedDependFactId= extract_all(""([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})"",NotSatisfiedDependency)
                     | project FactDefinition_Id,FactName,Owner,DataAgeInDays,NotSatisfiedDependFactId,NotSatisfiedTimeSlice,NotSatisfiedDependency
-                    | where DataAgeInDays >= 1 
-                    | where DataAgeInDays <= 5;
+                    | where DataAgeInDays == 0;
                      ";
 
                 // It is strongly recommended that each request has its own unique
@@ -132,33 +132,39 @@ namespace HelloKusto
                     // Read Records
                     while (reader.Read())
                     {
+                        // If notSatisfiedDependFactId value is not null
                         if (reader.GetValue(4).ToString() != "")
                         {
-                            query = @"let get_DependencyFact_Missing_TimeSlice=(factDefinitionId:string,timeSlice:datetime){
-                            let step = toscalar(
-                            get_measure_time_slices(factDefinitionId)
-                            | where TimeSlice between((timeSlice - 1d)..(timeSlice - 1tick))
-                            | summarize count() > 1);
-                            get_measure_time_slices(factDefinitionId)
-                            | make-series counter = count() default = 0
-                            on TimeSlice in range(timeSlice, (timeSlice + 1d - 1tick), iff(step, 1h, 1d))
-                            | project  counter, TimeSlice
-                            | mvexpand  counter,TimeSlice
-                            | where counter == 0
-                            | project TimeSlice
-                            }; get_DependencyFact_Missing_TimeSlice('" + reader.GetValue(4).ToString() + "', datetime(" + reader.GetValue(5).ToString() + ")); ";
-                            Console.WriteLine("\nThe Missing Time Slice: '{0}' for FactID: '{1}'\t", reader.GetValue(5).ToString(), reader.GetValue(0).ToString());
-                            Console.WriteLine("The Fact Missing Time Slices for DependFactID: '{0}'", reader.GetValue(4).ToString());
-                            using (var dependFactReader = queryProvider.ExecuteQuery(query, clientRequestProperties))
+                            JArray jArray = JArray.Parse(reader.GetValue(4).ToString());
+                            // For each notSatisfiedDependFactId find the missing time slice
+                            foreach (var notSatisfiedDependFactId in jArray)
                             {
-                                while (dependFactReader.Read())
+                                query = @"let get_DependencyFact_Missing_TimeSlice=(factDefinitionId:string,timeSlice:datetime){
+                                let step = toscalar(
+                                get_measure_time_slices(factDefinitionId)
+                                | where TimeSlice between((timeSlice - 1d)..(timeSlice - 1tick))
+                                | summarize count() > 1);
+                                get_measure_time_slices(factDefinitionId)
+                                | make-series counter = count() default = 0
+                                on TimeSlice in range(timeSlice, (timeSlice + 1d - 1tick), iff(step, 1h, 1d))
+                                | project  counter, TimeSlice
+                                | mvexpand  counter,TimeSlice
+                                | where counter == 0
+                                | project TimeSlice
+                                }; get_DependencyFact_Missing_TimeSlice('" + notSatisfiedDependFactId.ToString() + "', datetime(" + reader.GetValue(5).ToString() + ")); ";
+                                Console.WriteLine("\nThe Missing Time Slice: '{0}' for FactID: '{1}'\t", reader.GetValue(5).ToString(), reader.GetValue(0).ToString());
+                                Console.WriteLine("The Fact Missing Time Slices for DependFactID: '{0}'", notSatisfiedDependFactId.ToString());
+                                using (var dependFactReader = queryProvider.ExecuteQuery(query, clientRequestProperties))
                                 {
-                                    if (dependFactReader.GetValue(0).ToString() != "")
+                                    while (dependFactReader.Read())
                                     {
-                                        Console.WriteLine("{0}\t", dependFactReader.GetValue(0));
+                                        if (dependFactReader.GetValue(0).ToString() != "")
+                                        {
+                                            Console.WriteLine("{0}\t", dependFactReader.GetValue(0));
+                                        }
                                     }
                                 }
-                            }
+                            }                            
                         }
                     }
                     #endregion FFF
